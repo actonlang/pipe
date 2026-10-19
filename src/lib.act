@@ -30,6 +30,9 @@ actor _ActorPipeEndpoint():
     var _pending_in: list[bytes] = []
     var _pending_out: list[bytes] = []
     var _closed = False
+    # True from the peer closing its end until a restart. Like the end of a
+    # TCP stream: the reader gets an error, and writes go nowhere.
+    var _peer_closed = False
 
     def connect(peer: _ActorPipeEndpoint):
         _peer = peer
@@ -54,6 +57,8 @@ actor _ActorPipeEndpoint():
             data = _pending_in[0]
             _pending_in = _pending_in[1:]
             await async _read_cb(None, data)
+        if _peer_closed:
+            await async _read_cb(OSError("Actor pipe closed by peer"), None)
 
     def deliver_from_peer(data: bytes):
         if _closed:
@@ -67,6 +72,9 @@ actor _ActorPipeEndpoint():
     def write(data: bytes):
         if _closed:
             raise ValueError("Unable to write, actor pipe is closed")
+        if _peer_closed:
+            # The reader has had the error already
+            return
 
         peer = _peer
         if peer is not None:
@@ -87,17 +95,30 @@ actor _ActorPipeEndpoint():
             return
 
         _closed = True
+        peer = _peer
+        if peer is not None:
+            peer.peer_close()
         if on_close is not None:
             await async on_close()
 
+    def peer_close():
+        if _closed or _peer_closed:
+            return
+        _peer_closed = True
+        # Without a read callback, read_cb() gives the error after the data
+        if _has_read_cb:
+            await async _read_cb(OSError("Actor pipe closed by peer"), None)
+
     def peer_restart():
         _closed = False
+        _peer_closed = False
         _pending_in = []
         _emit_connected()
         _flush_pending_in()
 
     def restart():
         _closed = False
+        _peer_closed = False
         _pending_in = []
         _pending_out = []
 
@@ -176,6 +197,61 @@ actor _test_actor_pipe_pair(t: testing.AsyncT):
 
     def _on_timeout():
         t.failure(ValueError("Timed out waiting for actor pipe exchange"))
+
+    pipes.client.read_cb(_client_read)
+    pipes.server.read_cb(_server_read)
+    after 1.0: _on_timeout()
+
+
+actor _test_actor_pipe_close_reaches_peer(t: testing.AsyncT):
+    """Closing one end gives the peer its data, then an error. A restart reopens both ends."""
+    pipes = actor_pipe_pair()
+    var server_connects = 0
+    var client_connects = 0
+    var got_data = False
+    var done = False
+
+    def _finish(error: ?Exception):
+        if done:
+            return
+        done = True
+        if error is not None:
+            t.failure(error)
+        else:
+            t.success()
+
+    def _client_read(err: ?Exception, data: ?bytes):
+        if err is not None:
+            if not got_data:
+                _finish(ValueError("The error came before the data"))
+                return
+            # Goes nowhere: the server has closed its end
+            pipes.client.write(b"dropped")
+            pipes.client.restart()
+        elif data is None:
+            client_connects += 1
+            if client_connects == 2:
+                pipes.client.write(b"again")
+        elif data == b"last":
+            got_data = True
+        else:
+            _finish(ValueError("Unexpected data: {data}"))
+
+    def _server_read(err: ?Exception, data: ?bytes):
+        if err is not None:
+            _finish(err)
+        elif data is None:
+            server_connects += 1
+            if server_connects == 1:
+                pipes.server.write(b"last")
+                pipes.server.close(None)
+        elif data == b"again":
+            _finish(None)
+        else:
+            _finish(ValueError("Unexpected data: {data}"))
+
+    def _on_timeout():
+        _finish(ValueError("Timed out waiting for the reopened pipe"))
 
     pipes.client.read_cb(_client_read)
     pipes.server.read_cb(_server_read)
