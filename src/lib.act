@@ -131,8 +131,8 @@ class ActorPipe(Pipe):
         self._endpoint.restart()
 
 
-def actor_pipe_pair() -> (client: ActorPipe, server: ActorPipe):
-    """Create an unconnected pair. Writes queue until connect_pipe_pair is called."""
+def create_actor_pipe_pair() -> (client: ActorPipe, server: ActorPipe):
+    """Create an unconnected pair. Writes queue until connect_actor_pipe_pair is called."""
     client_ep = _ActorPipeEndpoint()
     server_ep = _ActorPipeEndpoint()
     client_pipe = ActorPipe(client_ep)
@@ -140,14 +140,20 @@ def actor_pipe_pair() -> (client: ActorPipe, server: ActorPipe):
     return (client=client_pipe, server=server_pipe)
 
 
-proc def connect_pipe_pair(pipes: (client: ActorPipe, server: ActorPipe)) -> None:
+proc def connect_actor_pipe_pair(pipes: (client: ActorPipe, server: ActorPipe)) -> None:
     """Connect both endpoints of an actor pipe pair."""
     pipes.client.connect(pipes.server)
     pipes.server.connect(pipes.client)
 
 
+proc def actor_pipe_pair() -> (client: ActorPipe, server: ActorPipe):
+    """Create and connect both endpoints of an actor pipe pair."""
+    pipes = create_actor_pipe_pair()
+    connect_actor_pipe_pair(pipes)
+    return pipes
+
+
 actor _test_actor_pipe_pair(t: testing.AsyncT):
-    pipes = actor_pipe_pair()
     var client_connected = False
     var server_connected = False
     var server_data: ?bytes = None
@@ -157,18 +163,18 @@ actor _test_actor_pipe_pair(t: testing.AsyncT):
         if client_connected and server_connected and server_data == b"ping" and client_data == b"pong":
             t.success()
 
-    def _client_read(err: ?Exception, data: ?bytes):
+    def _client_read(client: ActorPipe, err: ?Exception, data: ?bytes):
         if err is not None:
             t.failure(err)
             return
         if data is None:
             client_connected = True
-            pipes.client.write(b"ping")
+            client.write(b"ping")
         else:
             client_data = data
         _maybe_done()
 
-    def _server_read(err: ?Exception, data: ?bytes):
+    def _server_read(server: ActorPipe, err: ?Exception, data: ?bytes):
         if err is not None:
             t.failure(err)
             return
@@ -176,23 +182,23 @@ actor _test_actor_pipe_pair(t: testing.AsyncT):
             server_connected = True
         else:
             server_data = data
-            pipes.server.write(b"pong")
+            server.write(b"pong")
         _maybe_done()
 
     def _on_timeout():
         t.failure(ValueError("Timed out waiting for actor pipe exchange"))
 
     proc def __startup__():
-        connect_pipe_pair(pipes)
-        pipes.client.read_cb(_client_read)
-        pipes.server.read_cb(_server_read)
+        pipes = actor_pipe_pair()
+        pipes.client.read_cb(lambda err, data: _client_read(pipes.client, err, data))
+        pipes.server.read_cb(lambda err, data: _server_read(pipes.server, err, data))
         after 1.0: _on_timeout()
 
     __startup__()
 
 
 actor _test_actor_pipe_pair_buffered(t: testing.AsyncT):
-    pipes = actor_pipe_pair()
+    pipes = create_actor_pipe_pair()
     var connecting = False
     var done = False
     var client_data: ?bytes = None
@@ -237,7 +243,7 @@ actor _test_actor_pipe_pair_buffered(t: testing.AsyncT):
         pipes.client.read_cb(_client_read)
         pipes.server.read_cb(_server_read)
         connecting = True
-        connect_pipe_pair(pipes)
+        connect_actor_pipe_pair(pipes)
         after 1.0: _on_timeout()
 
     __startup__()
