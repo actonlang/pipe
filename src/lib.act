@@ -132,13 +132,18 @@ class ActorPipe(Pipe):
 
 
 def actor_pipe_pair() -> (client: ActorPipe, server: ActorPipe):
+    """Create an unconnected pair. Writes queue until connect_pipe_pair is called."""
     client_ep = _ActorPipeEndpoint()
     server_ep = _ActorPipeEndpoint()
     client_pipe = ActorPipe(client_ep)
     server_pipe = ActorPipe(server_ep)
-    client_pipe.connect(server_pipe)
-    server_pipe.connect(client_pipe)
     return (client=client_pipe, server=server_pipe)
+
+
+proc def connect_pipe_pair(pipes: (client: ActorPipe, server: ActorPipe)) -> None:
+    """Connect both endpoints of an actor pipe pair."""
+    pipes.client.connect(pipes.server)
+    pipes.server.connect(pipes.client)
 
 
 actor _test_actor_pipe_pair(t: testing.AsyncT):
@@ -177,6 +182,62 @@ actor _test_actor_pipe_pair(t: testing.AsyncT):
     def _on_timeout():
         t.failure(ValueError("Timed out waiting for actor pipe exchange"))
 
-    pipes.client.read_cb(_client_read)
-    pipes.server.read_cb(_server_read)
-    after 1.0: _on_timeout()
+    proc def __startup__():
+        connect_pipe_pair(pipes)
+        pipes.client.read_cb(_client_read)
+        pipes.server.read_cb(_server_read)
+        after 1.0: _on_timeout()
+
+    __startup__()
+
+
+actor _test_actor_pipe_pair_buffered(t: testing.AsyncT):
+    pipes = actor_pipe_pair()
+    var connecting = False
+    var done = False
+    var client_data: ?bytes = None
+    var server_data: ?bytes = None
+
+    def _maybe_done():
+        if not done and client_data == b"server" and server_data == b"client":
+            done = True
+            t.success()
+
+    def _client_read(err: ?Exception, data: ?bytes):
+        if err is not None:
+            done = True
+            t.failure(err)
+        elif data is not None:
+            if not connecting:
+                done = True
+                t.failure(ValueError("Actor pipe delivered data before connection"))
+                return
+            client_data = data
+            _maybe_done()
+
+    def _server_read(err: ?Exception, data: ?bytes):
+        if err is not None:
+            done = True
+            t.failure(err)
+        elif data is not None:
+            if not connecting:
+                done = True
+                t.failure(ValueError("Actor pipe delivered data before connection"))
+                return
+            server_data = data
+            _maybe_done()
+
+    def _on_timeout():
+        if not done:
+            t.failure(ValueError("Timed out flushing buffered actor pipe writes"))
+
+    proc def __startup__():
+        pipes.client.write(b"client")
+        pipes.server.write(b"server")
+        pipes.client.read_cb(_client_read)
+        pipes.server.read_cb(_server_read)
+        connecting = True
+        connect_pipe_pair(pipes)
+        after 1.0: _on_timeout()
+
+    __startup__()
