@@ -163,35 +163,36 @@ actor _test_actor_pipe_pair(t: testing.AsyncT):
         if client_connected and server_connected and server_data == b"ping" and client_data == b"pong":
             t.success()
 
-    def _client_read(client: ActorPipe, err: ?Exception, data: ?bytes):
-        if err is not None:
-            t.failure(err)
-            return
-        if data is None:
-            client_connected = True
-            client.write(b"ping")
-        else:
-            client_data = data
-        _maybe_done()
-
-    def _server_read(server: ActorPipe, err: ?Exception, data: ?bytes):
-        if err is not None:
-            t.failure(err)
-            return
-        if data is None:
-            server_connected = True
-        else:
-            server_data = data
-            server.write(b"pong")
-        _maybe_done()
-
     def _on_timeout():
         t.failure(ValueError("Timed out waiting for actor pipe exchange"))
 
     proc def __startup__():
         pipes = actor_pipe_pair()
-        pipes.client.read_cb(lambda err, data: _client_read(pipes.client, err, data))
-        pipes.server.read_cb(lambda err, data: _server_read(pipes.server, err, data))
+
+        def _client_read(err: ?Exception, data: ?bytes):
+            if err is not None:
+                t.failure(err)
+                return
+            if data is None:
+                client_connected = True
+                pipes.client.write(b"ping")
+            else:
+                client_data = data
+            _maybe_done()
+
+        def _server_read(err: ?Exception, data: ?bytes):
+            if err is not None:
+                t.failure(err)
+                return
+            if data is None:
+                server_connected = True
+            else:
+                server_data = data
+                pipes.server.write(b"pong")
+            _maybe_done()
+
+        pipes.client.read_cb(_client_read)
+        pipes.server.read_cb(_server_read)
         after 1.0: _on_timeout()
 
 
