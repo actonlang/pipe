@@ -194,7 +194,6 @@ actor _test_actor_pipe_pair(t: testing.AsyncT):
         pipes.server.read_cb(lambda err, data: _server_read(pipes.server, err, data))
         after 1.0: _on_timeout()
 
-    __startup__()
 
 
 actor _test_actor_pipe_pair_buffered(t: testing.AsyncT):
@@ -245,5 +244,3 @@ actor _test_actor_pipe_pair_buffered(t: testing.AsyncT):
         connecting = True
         connect_actor_pipe_pair(pipes)
         after 1.0: _on_timeout()
-
-    __startup__()
