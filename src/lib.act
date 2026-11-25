@@ -166,7 +166,7 @@ actor _test_actor_pipe_pair(t: testing.AsyncT):
     def _on_timeout():
         t.failure(ValueError("Timed out waiting for actor pipe exchange"))
 
-    proc def __startup__():
+    def __startup__():
         pipes = actor_pipe_pair()
 
         def _client_read(err: ?Exception, data: ?bytes):
@@ -237,7 +237,7 @@ actor _test_actor_pipe_pair_buffered(t: testing.AsyncT):
         if not done:
             t.failure(ValueError("Timed out flushing buffered actor pipe writes"))
 
-    proc def __startup__():
+    def __startup__():
         pipes.client.write(b"client")
         pipes.server.write(b"server")
         pipes.client.read_cb(_client_read)
